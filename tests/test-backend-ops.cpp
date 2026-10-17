@@ -7537,6 +7537,35 @@ struct test_mul_mat_pos : public test_mul_mat {
     }
 };
 
+// test_mul_mat_pos with a src1 precision request [TAG_GGML_PREC]
+struct test_mul_mat_prec : public test_mul_mat_pos {
+    const bool strict; // request GGML_PREC_F32 for src1
+
+    test_mul_mat_prec(ggml_type type_a, int64_t m, int64_t n, int64_t k, bool strict)
+        : test_mul_mat_pos(type_a, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}), strict(strict) {}
+
+    std::string vars() override {
+        return test_mul_mat_pos::vars() + ",strict=" + var_to_str(strict);
+    }
+
+    double max_nmse_err(ggml_backend_t backend) override {
+        // the Metal tensor kernel truncates src1 to a 10-bit mantissa unless asked not to (about 1.1e-7 here), other backends keep their usual limit
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ggml_backend_get_device(backend));
+        if (strict && type_a == GGML_TYPE_F32 && strcmp(ggml_backend_reg_name(reg), "MTL") == 0) {
+            return 1e-9;
+        }
+        return test_mul_mat_pos::max_nmse_err(backend);
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * out = test_mul_mat_pos::build_graph(ctx);
+        if (strict) {
+            ggml_prec_set_src(out, GGML_PREC_F32, 1);
+        }
+        return out;
+    }
+};
+
 enum mul_mat_add_mode {
     MUL_MAT_ADD_MM_RES,     // mm + res
     MUL_MAT_ADD_RES_MM,     // res + mm
@@ -10814,6 +10843,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         // a src1 with a nonzero mean, for the zero points and mins of quantized src0 types
         for (ggml_type type_a : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q8_0, GGML_TYPE_Q2_K, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
             test_cases.emplace_back(new test_mul_mat_pos(type_a, GGML_TYPE_F32, 1000, n, 1024, {1, 1}, {1, 1}));
+        }
+    }
+
+    // src1 precision request, at batch sizes that reach the mat-mat kernels
+    // default first, so a pipeline cache that ignores the request fails the strict f32 case
+    for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16}) {
+        for (int64_t n : {64, 640}) {
+            for (bool strict : {false, true}) {
+                test_cases.emplace_back(new test_mul_mat_prec(type_a, 1000, n, 1024, strict));
+            }
         }
     }
 

@@ -945,9 +945,24 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
     const int16_t r2   = (int16_t) (ne12 / op->src[0]->ne[2]);
     const int16_t r3   = (int16_t) (ne13 / op->src[0]->ne[3]);
 
+    // src1 prec [TAG_GGML_PREC]
+    // the relaxed tensor path keeps a 10-bit mantissa and the f32 exponent, enough for every request below F32
+    bool strict = false;
+    switch ((ggml_prec) ggml_get_op_params_i32(op, 3)) {
+        case GGML_PREC_F32:
+            strict = has_tensor;
+            break;
+        case GGML_PREC_UNDEFINED:
+        case GGML_PREC_BF16:
+        case GGML_PREC_F16:
+        case GGML_PREC_Q8:
+        case GGML_PREC_Q4:
+            break;
+    }
+
     snprintf(base, 256, "kernel_mul_mm_%s_%s", ggml_type_name(tsrc0), ggml_type_name(tsrc1));
-    snprintf(name, 256, "%s_bci=%d_bco=%d_ne12=%d_ne13=%d_r2=%d_r3=%d",
-             base, bc_inp, bc_out, ne12, ne13, r2, r3);
+    snprintf(name, 256, "%s_bci=%d_bco=%d_ne12=%d_ne13=%d_r2=%d_r3=%d_strict=%d",
+             base, bc_inp, bc_out, ne12, ne13, r2, r3, strict);
 
     ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
     if (!res.pipeline) {
@@ -959,6 +974,7 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mm(ggml_meta
         ggml_metal_cv_set_int16(cv, ne13,  FC_MUL_MM + 3);
         ggml_metal_cv_set_int16(cv, r2,    FC_MUL_MM + 4);
         ggml_metal_cv_set_int16(cv, r3,    FC_MUL_MM + 5);
+        ggml_metal_cv_set_bool(cv, strict, FC_MUL_MM + 8);
 
         res = ggml_metal_library_compile_pipeline(lib, base, name, cv);
 

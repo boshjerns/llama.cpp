@@ -9,23 +9,27 @@ constant short FC_mul_mm_r2    [[function_constant(FC_MUL_MM + 4)]];
 constant short FC_mul_mm_r3    [[function_constant(FC_MUL_MM + 5)]];
 constant bool FC_mul_mm_id_amax [[function_constant(FC_MUL_MM + 6)]];
 constant int32_t FC_mul_mm_id_map0_ne02 [[function_constant(FC_MUL_MM + 7)]];
+constant bool FC_mul_mm_strict [[function_constant(FC_MUL_MM + 8)]];
 
 // each block_q contains 16*nl weights
 #ifdef GGML_METAL_HAS_TENSOR
+// strict turns off relaxed_precision, which truncates src1 to a 10-bit mantissa [TAG_GGML_PREC]
+// TODO: an f32 src0 is staged as half here, so it keeps f16 precision and range either way
 template<
+    bool strict,
     typename SA, typename SA_4x4, typename SA_8x8,
     typename SB, typename SB_2x4, typename SB_8x8,
     typename block_q, short nl, void (*dequantize_func)(device const block_q *, short, thread SA_4x4 &),
     typename T0, typename T0_4x4, typename T1, typename T1_2x4>
-kernel void kernel_mul_mm(
+void kernel_mul_mm_impl(
         constant ggml_metal_kargs_mul_mm & args,
         device const char * srcA,
         device const char * srcB,
         device       char * dst,
-        threadgroup  char * shmem [[threadgroup(0)]],
-        uint3  tgpig [[threadgroup_position_in_grid]],
-        ushort tiitg [[thread_index_in_threadgroup]],
-        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+        threadgroup  char * shmem,
+        uint3  tgpig,
+        ushort tiitg,
+        ushort sgitg) {
     (void) sgitg;
 
     // Matrix dimensions: A(M,K) x B(K,N) -> C(M,N)
@@ -70,11 +74,11 @@ kernel void kernel_mul_mm(
     // ref: https://github.com/ggml-org/llama.cpp/pull/27064
     mpp::tensor_ops::matmul2d<
         mpp::tensor_ops::matmul2d_descriptor(
-            NRB, NRA, static_cast<int>(dynamic_extent), false, true, true,
+            NRB, NRA, static_cast<int>(dynamic_extent), false, true, !strict,
             mpp::tensor_ops::matmul2d_descriptor::mode::multiply_accumulate),
         execution_simdgroups<N_MM_SIMD_GROUP_X * N_MM_SIMD_GROUP_Y>> mm;
 
-    auto cT = mm.get_destination_cooperative_tensor<decltype(tB), decltype(tA), float>();
+    auto cT = mm.template get_destination_cooperative_tensor<decltype(tB), decltype(tA), float>();
 
     // Accumulate partial results over K dimension
     for (int loop_k = 0; loop_k < K; loop_k += N_MM_NK_TOTAL) {
@@ -146,6 +150,26 @@ kernel void kernel_mul_mm(
     cT.store(tD);
 }
 
+template<
+    typename SA, typename SA_4x4, typename SA_8x8,
+    typename SB, typename SB_2x4, typename SB_8x8,
+    typename block_q, short nl, void (*dequantize_func)(device const block_q *, short, thread SA_4x4 &),
+    typename T0, typename T0_4x4, typename T1, typename T1_2x4>
+kernel void kernel_mul_mm(
+        constant ggml_metal_kargs_mul_mm & args,
+        device const char * srcA,
+        device const char * srcB,
+        device       char * dst,
+        threadgroup  char * shmem [[threadgroup(0)]],
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        ushort tiitg [[thread_index_in_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]]) {
+    if (FC_mul_mm_strict) {
+        kernel_mul_mm_impl<true,  SA, SA_4x4, SA_8x8, SB, SB_2x4, SB_8x8, block_q, nl, dequantize_func, T0, T0_4x4, T1, T1_2x4>(args, srcA, srcB, dst, shmem, tgpig, tiitg, sgitg);
+    } else {
+        kernel_mul_mm_impl<false, SA, SA_4x4, SA_8x8, SB, SB_2x4, SB_8x8, block_q, nl, dequantize_func, T0, T0_4x4, T1, T1_2x4>(args, srcA, srcB, dst, shmem, tgpig, tiitg, sgitg);
+    }
+}
 #else
 
 template<

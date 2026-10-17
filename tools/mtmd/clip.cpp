@@ -1730,6 +1730,10 @@ struct clip_model_loader {
                             // for "unified" variant, we directly use a bigger patch size, because the "token merging" is done directly on conv layer
                             hparams.patch_size = hparams.patch_size * hparams.n_merge;
                             hparams.n_merge = 1;
+                        } else if (gguf_find_key(ctx_gguf.get(), KEY_USE_GELU) < 0 && gguf_find_key(ctx_gguf.get(), KEY_USE_SILU) < 0) {
+                            // older mmproj files have no activation key; vision_config.hidden_activation is gelu_pytorch_tanh
+                            hparams.ffn_op = FFN_GELU;
+                            log_ffn_op = "gelu";
                         }
                         hparams.set_limit_image_tokens(70, 1120);
                         hparams.set_warmup_n_tokens(256); // avoid OOM on warmup
